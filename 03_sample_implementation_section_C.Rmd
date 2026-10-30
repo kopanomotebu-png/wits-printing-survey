@@ -1,0 +1,185 @@
+---
+title: "STAT4102 Applied Sampling Mini Project: Section C"
+subtitle: "Sample Implementation and Design Weights"
+date: "2026-09-15"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+# Purpose
+
+This document implements the stratified random sample from the simulated population of 10,000 Wits University students. It uses the Section B Neyman allocation, adds year of study as an auxiliary variable, calculates inclusion probabilities and design weights, checks the realised sample, and saves the required CSV files.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE)
+```
+
+# 1. Load and verify the finite population
+
+Place `wits_printing_population.csv` in the same RCloud working directory as this RMD.
+
+```{r load}
+population <- read.csv("wits_printing_population.csv", stringsAsFactors=FALSE)
+stopifnot(nrow(population) == 10000)
+needed <- c("student_id","faculty","pages_month")
+if (!all(needed %in% names(population))) stop("Required population variables are missing.")
+cat("Population size:", nrow(population), "\n")
+head(population)
+```
+
+# 2. Add an auxiliary variable
+
+Year of study is included as a relevant auxiliary variable. The probabilities are simulation assumptions, not actual Wits enrolment proportions.
+
+```{r auxiliary}
+set.seed(4103)
+year_levels <- c("First year","Second year","Third year","Fourth year or above")
+year_probs <- c(0.30,0.27,0.24,0.19)
+population$year_of_study <- sample(year_levels, nrow(population),
+                                   replace=TRUE, prob=year_probs)
+table(population$year_of_study)
+```
+
+# 3. Define the Section B Neyman allocation
+
+The minimum completed sample was 372. After allowing for 10% anticipated non-response, 414 students are selected initially.
+
+```{r allocation}
+allocation <- data.frame(
+ faculty=c("Commerce, Law and Management",
+           "Engineering and the Built Environment",
+           "Health Sciences","Humanities","Science"),
+ N_h=c(2500,2000,1700,2300,1500),
+ n_h=c(97,55,77,138,47),
+ stringsAsFactors=FALSE
+)
+allocation$inclusion_probability <- allocation$n_h/allocation$N_h
+allocation$sampling_weight <- allocation$N_h/allocation$n_h
+allocation
+cat("Total sample:", sum(allocation$n_h), "\n")
+```
+
+# 4. Verify faculty population sizes
+
+```{r faculty-check}
+obs <- as.data.frame(table(population$faculty))
+names(obs) <- c("faculty","observed_N_h")
+check <- merge(allocation[,c("faculty","N_h")], obs, by="faculty", all.x=TRUE)
+print(check)
+stopifnot(all(check$N_h == check$observed_N_h))
+```
+
+# 5. Draw the stratified sample
+
+Sampling is without replacement within each faculty. Seed 4104 makes the realised sample reproducible.
+
+```{r draw}
+set.seed(4104)
+sample_list <- vector("list", nrow(allocation))
+
+for (h in seq_len(nrow(allocation))) {
+  f <- allocation$faculty[h]
+  d <- population[population$faculty == f, ]
+  idx <- sample(seq_len(nrow(d)), size=allocation$n_h[h], replace=FALSE)
+  s <- d[idx, ]
+  s$N_h <- allocation$N_h[h]
+  s$n_h <- allocation$n_h[h]
+  s$inclusion_probability <- allocation$inclusion_probability[h]
+  s$sampling_weight <- allocation$sampling_weight[h]
+  sample_list[[h]] <- s
+}
+
+sample_data <- do.call(rbind, sample_list)
+rownames(sample_data) <- NULL
+sample_data <- sample_data[,c("student_id","faculty","year_of_study",
+                              "pages_month","N_h","n_h",
+                              "inclusion_probability","sampling_weight")]
+cat("Realised sample size:", nrow(sample_data), "\n")
+head(sample_data,10)
+```
+
+# 6. Verify the realised allocation
+
+```{r realised-check}
+realised <- as.data.frame(table(sample_data$faculty))
+names(realised) <- c("faculty","realised_n")
+allocation_check <- merge(allocation[,c("faculty","n_h")], realised, by="faculty")
+print(allocation_check)
+stopifnot(all(allocation_check$n_h == allocation_check$realised_n))
+stopifnot(nrow(sample_data) == 414)
+```
+
+# 7. Data-quality and design checks
+
+```{r checks}
+duplicates <- sum(duplicated(sample_data$student_id))
+missing <- sum(is.na(sample_data))
+negative <- sum(sample_data$pages_month < 0)
+invalid_pi <- sum(sample_data$inclusion_probability <= 0 |
+                  sample_data$inclusion_probability > 1)
+weight_error <- max(abs(sample_data$sampling_weight -
+                        1/sample_data$inclusion_probability))
+
+cat("Duplicate IDs:", duplicates, "\n")
+cat("Missing values:", missing, "\n")
+cat("Negative page counts:", negative, "\n")
+cat("Invalid inclusion probabilities:", invalid_pi, "\n")
+cat("Maximum weight identity error:", weight_error, "\n")
+
+stopifnot(duplicates == 0, missing == 0, negative == 0,
+          invalid_pi == 0, weight_error < 1e-10)
+```
+
+# 8. Summary of the realised sample
+
+```{r summary}
+faculty_n <- aggregate(pages_month ~ faculty, sample_data, length)
+names(faculty_n)[2] <- "sample_n"
+faculty_mean <- aggregate(pages_month ~ faculty, sample_data, mean)
+names(faculty_mean)[2] <- "sample_mean"
+faculty_sd <- aggregate(pages_month ~ faculty, sample_data, sd)
+names(faculty_sd)[2] <- "sample_sd"
+
+realised_summary <- Reduce(function(x,y) merge(x,y,by="faculty"),
+                           list(faculty_n,faculty_mean,faculty_sd))
+realised_summary$sample_mean <- round(realised_summary$sample_mean,2)
+realised_summary$sample_sd <- round(realised_summary$sample_sd,2)
+realised_summary
+
+cat("Overall unweighted sample mean:",
+    round(mean(sample_data$pages_month),2), "pages\n")
+```
+
+# 9. Auxiliary-variable summary
+
+```{r year-summary}
+year_summary <- as.data.frame(table(sample_data$year_of_study))
+names(year_summary) <- c("year_of_study","sample_n")
+year_summary$percentage <- round(100*year_summary$sample_n/nrow(sample_data),1)
+year_summary
+```
+
+# 10. Plots
+
+```{r histogram, fig.width=8, fig.height=5}
+hist(sample_data$pages_month, breaks=30,
+     main="Monthly Printing and Photocopying Demand in the Realised Sample",
+     xlab="Number of pages per month", ylab="Number of sampled students")
+```
+
+```{r boxplot, fig.width=9, fig.height=6}
+boxplot(pages_month ~ faculty, data=sample_data, las=2,
+        main="Monthly Printing and Photocopying Demand by Faculty",
+        xlab="Faculty", ylab="Pages per month")
+```
+
+# 11. Save required files
+
+```{r save}
+write.csv(population, "wits_printing_population_with_auxiliary.csv", row.names=FALSE)
+write.csv(sample_data, "wits_printing_sample.csv", row.names=FALSE)
+write.csv(realised_summary, "section_C_realised_sample_summary.csv", row.names=FALSE)
+
+```

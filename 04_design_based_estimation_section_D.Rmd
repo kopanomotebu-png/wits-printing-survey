@@ -1,0 +1,521 @@
+---
+title: "STAT4102 Applied Sampling Mini Project: Section D"
+subtitle: "Design-Based Estimation and Comparison with SRSWOR"
+date: "2026-09-15"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+# Purpose
+
+This document carries out the design-based analysis of the realised stratified sample from Section C. It estimates the mean monthly number of pages printed or photocopied per student, its variance, standard error, 95% confidence interval, coefficient of variation and design effect. It also compares the design-based results with a naive analysis that ignores the sampling design and with an approximately equal-sized SRSWOR sample.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE)
+```
+
+
+```{r load-data}
+population <- read.csv(
+  "wits_printing_population_with_auxiliary.csv",
+  stringsAsFactors = FALSE
+)
+
+sample_data <- read.csv(
+  "wits_printing_sample.csv",
+  stringsAsFactors = FALSE
+)
+
+cat("Population size:", nrow(population), "\n")
+cat("Stratified sample size:", nrow(sample_data), "\n")
+
+stopifnot(nrow(population) == 10000)
+stopifnot(nrow(sample_data) == 414)
+```
+
+# 2. Verify required variables
+
+```{r verify-variables}
+required_sample_vars <- c(
+  "student_id",
+  "faculty",
+  "pages_month",
+  "N_h",
+  "n_h",
+  "inclusion_probability",
+  "sampling_weight"
+)
+
+if (!all(required_sample_vars %in% names(sample_data))) {
+  stop("The realised sample is missing one or more required variables.")
+}
+
+required_population_vars <- c(
+  "student_id",
+  "faculty",
+  "pages_month"
+)
+
+if (!all(required_population_vars %in% names(population))) {
+  stop("The population file is missing one or more required variables.")
+}
+
+cat("Required variables successfully verified.\n")
+```
+
+# 3. Known true finite-population quantities
+
+Because this is a simulation study, the true finite-population mean can be calculated directly from all 10,000 population units.
+
+```{r true-values}
+true_mean <- mean(population$pages_month)
+true_variance <- var(population$pages_month)
+true_sd <- sd(population$pages_month)
+
+cat("True finite-population mean:",
+    round(true_mean, 2), "pages per month\n")
+cat("True finite-population SD:",
+    round(true_sd, 2), "pages\n")
+cat("True finite-population variance:",
+    round(true_variance, 2), "\n")
+```
+
+# 4. Design-based stratified estimate
+
+For stratified random sampling, the estimator of the population mean is
+
+```{r stratified-estimate}
+N <- nrow(population)
+
+faculty_stats <- aggregate(
+  pages_month ~ faculty,
+  data = sample_data,
+  FUN = function(x) c(
+    n = length(x),
+    mean = mean(x),
+    variance = var(x),
+    sd = sd(x)
+  )
+)
+
+faculty_stats
+```
+
+Create a clean stratum summary.
+
+```{r clean-stratum-summary}
+faculty_names <- unique(sample_data$faculty)
+
+stratum_summary <- data.frame(
+  faculty = faculty_names,
+  stringsAsFactors = FALSE
+)
+
+stratum_summary$N_h <- sapply(
+  stratum_summary$faculty,
+  function(f) unique(sample_data$N_h[sample_data$faculty == f])
+)
+
+stratum_summary$n_h <- sapply(
+  stratum_summary$faculty,
+  function(f) unique(sample_data$n_h[sample_data$faculty == f])
+)
+
+stratum_summary$sample_mean <- sapply(
+  stratum_summary$faculty,
+  function(f) mean(sample_data$pages_month[sample_data$faculty == f])
+)
+
+stratum_summary$sample_variance <- sapply(
+  stratum_summary$faculty,
+  function(f) var(sample_data$pages_month[sample_data$faculty == f])
+)
+
+stratum_summary$sample_sd <- sqrt(stratum_summary$sample_variance)
+stratum_summary$W_h <- stratum_summary$N_h / N
+stratum_summary$f_h <- stratum_summary$n_h / stratum_summary$N_h
+
+stratum_summary$sample_mean <- round(stratum_summary$sample_mean, 4)
+stratum_summary$sample_variance <- round(stratum_summary$sample_variance, 4)
+stratum_summary$sample_sd <- round(stratum_summary$sample_sd, 4)
+
+stratum_summary
+```
+
+Calculate the weighted stratified mean.
+
+```{r weighted-mean}
+weighted_mean <- sum(
+  stratum_summary$W_h *
+    stratum_summary$sample_mean
+)
+
+cat("Design-based weighted mean:",
+    round(weighted_mean, 4),
+    "pages per month\n")
+```
+
+# 5. Estimated variance and standard error
+
+For stratified random sampling without replacement,
+
+```{r variance-se}
+var_strat <- sum(
+  stratum_summary$W_h^2 *
+    (1 - stratum_summary$f_h) *
+    (stratum_summary$sample_variance /
+       stratum_summary$n_h)
+)
+
+se_strat <- sqrt(var_strat)
+
+cat("Estimated variance:",
+    round(var_strat, 6), "\n")
+cat("Estimated standard error:",
+    round(se_strat, 4),
+    "pages\n")
+```
+
+# 6. 95% confidence interval
+
+```{r confidence-interval}
+z <- qnorm(0.975)
+
+ci_lower <- weighted_mean - z * se_strat
+ci_upper <- weighted_mean + z * se_strat
+half_width <- z * se_strat
+
+cat("95% CI: [",
+    round(ci_lower, 3), ",",
+    round(ci_upper, 3), "]\n")
+
+cat("Confidence-interval half-width:",
+    round(half_width, 3),
+    "pages\n")
+
+cat("Section B target half-width:",
+    round(0.05 * true_mean, 3),
+    "pages\n")
+```
+
+# 7. Coefficient of variation
+
+```{r coefficient-variation}
+cv_strat <- 100 * se_strat / weighted_mean
+
+cat("Coefficient of variation:",
+    round(cv_strat, 3), "%\n")
+```
+
+# 8. Naive analysis ignoring the sampling design
+
+The naive analysis treats all 414 sampled students as if they had equal selection probabilities.
+
+```{r naive-analysis}
+n_naive <- nrow(sample_data)
+
+naive_mean <- mean(sample_data$pages_month)
+naive_sd <- sd(sample_data$pages_month)
+
+# SRSWOR-style variance with finite population correction
+naive_var <- (1 - n_naive / N) *
+  naive_sd^2 / n_naive
+
+naive_se <- sqrt(naive_var)
+
+naive_lower <- naive_mean - z * naive_se
+naive_upper <- naive_mean + z * naive_se
+
+naive_cv <- 100 * naive_se / naive_mean
+
+cat("Naive unweighted mean:",
+    round(naive_mean, 4), "\n")
+cat("Naive estimated variance:",
+    round(naive_var, 6), "\n")
+cat("Naive standard error:",
+    round(naive_se, 4), "\n")
+cat("Naive 95% CI: [",
+    round(naive_lower, 3), ",",
+    round(naive_upper, 3), "]\n")
+cat("Naive CV:",
+    round(naive_cv, 3), "%\n")
+```
+
+# 9. Difference from the true population mean
+
+```{r estimation-error}
+weighted_error <- weighted_mean - true_mean
+naive_error <- naive_mean - true_mean
+
+weighted_abs_error <- abs(weighted_error)
+naive_abs_error <- abs(naive_error)
+
+cat("Weighted estimate error:",
+    round(weighted_error, 3), "pages\n")
+
+cat("Naive estimate error:",
+    round(naive_error, 3), "pages\n")
+
+cat("Absolute weighted error:",
+    round(weighted_abs_error, 3), "pages\n")
+
+cat("Absolute naive error:",
+    round(naive_abs_error, 3), "pages\n")
+```
+
+# 10. Design effect
+
+For this report, the variance-based design effect compares the estimated variance under the actual stratified design with the SRSWOR variance that would apply to an equal-sized sample, using the full finite-population variance as the benchmark.
+
+```{r design-effect}
+n_design <- nrow(sample_data)
+
+var_srs_benchmark <- (1 - n_design / N) *
+  true_variance / n_design
+
+se_srs_benchmark <- sqrt(var_srs_benchmark)
+
+deff <- var_strat / var_srs_benchmark
+
+cat("Stratified design variance:",
+    round(var_strat, 6), "\n")
+
+cat("Equal-size SRSWOR benchmark variance:",
+    round(var_srs_benchmark, 6), "\n")
+
+cat("Design effect (DEFF):",
+    round(deff, 4), "\n")
+
+cat("Relative efficiency (1/DEFF):",
+    round(1 / deff, 4), "\n")
+```
+
+# 11. Draw an approximately equal-sized SRSWOR sample
+
+A simple random sample without replacement of 414 students is drawn from the complete population. Seed 4105 is used for reproducibility.
+
+```{r draw-srs}
+set.seed(4105)
+
+n_srs <- nrow(sample_data)
+
+srs_rows <- sample(
+  seq_len(nrow(population)),
+  size = n_srs,
+  replace = FALSE
+)
+
+srs_sample <- population[srs_rows, ]
+rownames(srs_sample) <- NULL
+
+srs_sample$inclusion_probability <- n_srs / N
+srs_sample$sampling_weight <- N / n_srs
+
+cat("SRSWOR sample size:", nrow(srs_sample), "\n")
+cat("Duplicate SRS IDs:",
+    sum(duplicated(srs_sample$student_id)), "\n")
+```
+
+# 12. Analyse the realised SRSWOR sample
+
+```{r srs-analysis}
+srs_mean <- mean(srs_sample$pages_month)
+srs_sd <- sd(srs_sample$pages_month)
+
+srs_var_est <- (1 - n_srs / N) *
+  srs_sd^2 / n_srs
+
+srs_se <- sqrt(srs_var_est)
+
+srs_lower <- srs_mean - z * srs_se
+srs_upper <- srs_mean + z * srs_se
+
+srs_cv <- 100 * srs_se / srs_mean
+
+srs_error <- srs_mean - true_mean
+
+cat("SRSWOR estimated mean:",
+    round(srs_mean, 4), "\n")
+
+cat("SRSWOR estimated variance:",
+    round(srs_var_est, 6), "\n")
+
+cat("SRSWOR standard error:",
+    round(srs_se, 4), "\n")
+
+cat("SRSWOR 95% CI: [",
+    round(srs_lower, 3), ",",
+    round(srs_upper, 3), "]\n")
+
+cat("SRSWOR CV:",
+    round(srs_cv, 3), "%\n")
+
+cat("SRSWOR error from true mean:",
+    round(srs_error, 3), "pages\n")
+```
+
+# 13. Comparison of the three analyses
+
+```{r comparison-table}
+comparison <- data.frame(
+  Analysis = c(
+    "Stratified design-based",
+    "Naive unweighted",
+    "Equal-sized SRSWOR"
+  ),
+  Estimate = c(
+    weighted_mean,
+    naive_mean,
+    srs_mean
+  ),
+  Variance = c(
+    var_strat,
+    naive_var,
+    srs_var_est
+  ),
+  SE = c(
+    se_strat,
+    naive_se,
+    srs_se
+  ),
+  CI_Lower = c(
+    ci_lower,
+    naive_lower,
+    srs_lower
+  ),
+  CI_Upper = c(
+    ci_upper,
+    naive_upper,
+    srs_upper
+  ),
+  CV_Percent = c(
+    cv_strat,
+    naive_cv,
+    srs_cv
+  ),
+  Error_from_True = c(
+    weighted_error,
+    naive_error,
+    srs_error
+  )
+)
+
+numeric_cols <- sapply(comparison, is.numeric)
+comparison[numeric_cols] <-
+  round(comparison[numeric_cols], 4)
+
+comparison
+```
+
+# 14. Confidence interval comparison plot
+
+```{r ci-plot, fig.width=8, fig.height=5}
+estimates <- c(
+  weighted_mean,
+  naive_mean,
+  srs_mean
+)
+
+lower <- c(
+  ci_lower,
+  naive_lower,
+  srs_lower
+)
+
+upper <- c(
+  ci_upper,
+  naive_upper,
+  srs_upper
+)
+
+labels <- c(
+  "Stratified",
+  "Naive",
+  "SRSWOR"
+)
+
+plot(
+  1:3,
+  estimates,
+  ylim = range(c(lower, upper, true_mean)),
+  xaxt = "n",
+  xlab = "Analysis",
+  ylab = "Estimated mean pages per month",
+  main = "Comparison of Estimates and 95% Confidence Intervals",
+  pch = 19
+)
+
+axis(
+  1,
+  at = 1:3,
+  labels = labels
+)
+
+arrows(
+  1:3,
+  lower,
+  1:3,
+  upper,
+  angle = 90,
+  code = 3,
+  length = 0.05
+)
+
+abline(
+  h = true_mean,
+  lty = 2
+)
+
+legend(
+  "topright",
+  legend = "True population mean",
+  lty = 2,
+  bty = "n"
+)
+```
+
+# 15. Compare estimated standard errors
+
+```{r se-plot, fig.width=8, fig.height=5}
+se_values <- c(
+  se_strat,
+  naive_se,
+  srs_se
+)
+
+barplot(
+  se_values,
+  names.arg = c(
+    "Stratified",
+    "Naive",
+    "SRSWOR"
+  ),
+  ylab = "Estimated standard error",
+  main = "Standard Error Comparison"
+)
+```
+
+# 16. Save SRS sample and Section D results
+
+```{r save-results}
+write.csv(
+  srs_sample,
+  "section_D_srswor_sample.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  comparison,
+  "section_D_estimation_comparison.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  stratum_summary,
+  "section_D_stratum_estimation_summary.csv",
+  row.names = FALSE
+)
+
+```

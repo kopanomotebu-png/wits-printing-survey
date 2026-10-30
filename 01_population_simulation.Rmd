@@ -1,0 +1,234 @@
+---
+title: "STAT4102 Applied Sampling Mini Project: Population Simulation"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Purpose
+
+This document generates the complete simulated finite population for the mini project on monthly printing and photocopying demand among Wits University students. The population contains exactly 10,000 students and is divided into five faculty strata. The outcome variable is the number of pages printed or photocopied per student per month.
+
+The faculty population sizes and printing-demand parameters used below are simulation assumptions for this project and are not actual Wits University enrolment or printing statistics.
+
+
+```{r seed}
+set.seed(4102)
+```
+
+# Define the finite population
+
+The five faculty strata and their assumed population sizes are defined below.
+
+```{r strata}
+faculty_names <- c(
+  "Commerce, Law and Management",
+  "Engineering and the Built Environment",
+  "Health Sciences",
+  "Humanities",
+  "Science"
+)
+
+N_h <- c(
+  2500,
+  2000,
+  1700,
+  2300,
+  1500
+)
+
+population_structure <- data.frame(
+  faculty = faculty_names,
+  N_h = N_h,
+  percentage = 100 * N_h / sum(N_h)
+)
+
+population_structure
+
+stopifnot(sum(N_h) == 10000)
+```
+
+# Printing-demand assumptions
+
+Monthly printing and photocopying demand is count-valued, non-negative and may be right-skewed. A negative binomial distribution is therefore used. It also allows the variance to exceed the mean, which is useful for representing heterogeneous printing behaviour.
+
+The following means and dispersion parameters are simulation assumptions.
+
+```{r assumptions}
+mu_h <- c(
+  110,  # Commerce, Law and Management
+  80,   # Engineering and the Built Environment
+  125,  # Health Sciences
+  145,  # Humanities
+  90    # Science
+)
+
+size_h <- c(
+  4.5,
+  5.0,
+  4.0,
+  3.5,
+  4.5
+)
+
+simulation_assumptions <- data.frame(
+  faculty = faculty_names,
+  N_h = N_h,
+  assumed_mean = mu_h,
+  negative_binomial_size = size_h
+)
+
+simulation_assumptions
+```
+
+# Generate the complete population
+
+```{r generate-population}
+population_list <- vector("list", length(faculty_names))
+
+for (h in seq_along(faculty_names)) {
+  pages <- rnbinom(
+    n = N_h[h],
+    size = size_h[h],
+    mu = mu_h[h]
+  )
+
+  population_list[[h]] <- data.frame(
+    faculty = faculty_names[h],
+    pages_month = pages,
+    stringsAsFactors = FALSE
+  )
+}
+
+population <- do.call(rbind, population_list)
+row.names(population) <- NULL
+
+population$student_id <- sprintf("WITS%05d", seq_len(nrow(population)))
+population <- population[c("student_id", "faculty", "pages_month")]
+
+head(population, 10)
+```
+
+# Validate the population
+
+```{r validation}
+cat("Population size:", nrow(population), "\n")
+cat("Missing values:", sum(is.na(population)), "\n")
+cat("Negative printing values:", sum(population$pages_month < 0), "\n")
+
+stopifnot(nrow(population) == 10000)
+stopifnot(sum(is.na(population)) == 0)
+stopifnot(all(population$pages_month >= 0))
+stopifnot(length(unique(population$student_id)) == 10000)
+```
+
+# True finite-population parameter
+
+The primary parameter is the true finite-population mean monthly number of pages printed or photocopied per student. Since the full simulated population is available, this value can be calculated directly.
+
+```{r true-parameter}
+true_mean <- mean(population$pages_month)
+true_total <- sum(population$pages_month)
+true_sd <- sd(population$pages_month)
+true_variance <- var(population$pages_month)
+
+cat("True population mean:", round(true_mean, 2), "pages per month\n")
+cat("True population total:", true_total, "pages per month\n")
+cat("Population standard deviation:", round(true_sd, 2), "pages\n")
+cat("Population variance:", round(true_variance, 2), "\n")
+cat("Minimum pages:", min(population$pages_month), "\n")
+cat("Maximum pages:", max(population$pages_month), "\n")
+```
+
+# Stratum-specific population statistics
+
+These values will later be used in the sample-size calculations and in deciding the allocation of the sample across the five faculties.
+
+```{r stratum-summary}
+stratum_N <- aggregate(pages_month ~ faculty, data = population, FUN = length)
+names(stratum_N)[2] <- "N_h"
+
+stratum_mean <- aggregate(pages_month ~ faculty, data = population, FUN = mean)
+names(stratum_mean)[2] <- "mean_pages"
+
+stratum_sd <- aggregate(pages_month ~ faculty, data = population, FUN = sd)
+names(stratum_sd)[2] <- "SD_h"
+
+stratum_var <- aggregate(pages_month ~ faculty, data = population, FUN = var)
+names(stratum_var)[2] <- "Variance_h"
+
+stratum_summary <- Reduce(
+  function(x, y) merge(x, y, by = "faculty"),
+  list(stratum_N, stratum_mean, stratum_sd, stratum_var)
+)
+
+# Preserve the intended faculty order
+stratum_summary$faculty <- factor(
+  stratum_summary$faculty,
+  levels = faculty_names
+)
+stratum_summary <- stratum_summary[order(stratum_summary$faculty), ]
+stratum_summary$faculty <- as.character(stratum_summary$faculty)
+row.names(stratum_summary) <- NULL
+
+stratum_summary$mean_pages <- round(stratum_summary$mean_pages, 2)
+stratum_summary$SD_h <- round(stratum_summary$SD_h, 2)
+stratum_summary$Variance_h <- round(stratum_summary$Variance_h, 2)
+
+stratum_summary
+```
+
+# Distribution of monthly printing demand
+
+```{r histogram, fig.width=8, fig.height=5}
+hist(
+  population$pages_month,
+  breaks = 40,
+  main = "Distribution of Monthly Printing and Photocopying Demand",
+  xlab = "Number of pages per month",
+  ylab = "Number of students"
+)
+```
+
+# Printing demand by faculty
+
+```{r boxplot, fig.width=10, fig.height=6}
+par(mar = c(10, 4, 4, 2) + 0.1)
+boxplot(
+  pages_month ~ faculty,
+  data = population,
+  las = 2,
+  main = "Monthly Printing and Photocopying Demand by Faculty",
+  xlab = "",
+  ylab = "Pages per month"
+)
+```
+
+# Save required CSV files
+
+The complete finite population is saved as a CSV file. The stratum summary is also saved for convenient use in later sections of the project.
+
+```{r save-files}
+write.csv(
+  population,
+  file = "wits_printing_population.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  stratum_summary,
+  file = "wits_printing_stratum_summary.csv",
+  row.names = FALSE
+)
+
+cat("Saved: wits_printing_population.csv\n")
+cat("Saved: wits_printing_stratum_summary.csv\n")
+```

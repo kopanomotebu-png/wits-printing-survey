@@ -1,0 +1,453 @@
+---
+title: "STAT4102 Applied Sampling Mini Project: Section E"
+subtitle: "Simulation-Based Assessment of Stratified Sampling and SRSWOR"
+date: "2026-09-15"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+# Purpose
+
+This document evaluates the repeated-sampling performance of the stratified design used in Sections C and D and compares it with an equal-sized SRSWOR benchmark.
+
+A total of 1,000 Monte Carlo repetitions are used. In each repetition, a stratified sample of 414 students and an SRSWOR sample of 414 students are independently selected from the fixed finite population. For each design, the estimated mean, estimated standard error and 95% confidence interval are recorded.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE)
+```
+
+# 1. Load and verify the finite population
+
+Place `wits_printing_population_with_auxiliary.csv` in the same RCloud working directory as this RMD.
+
+```{r load}
+population <- read.csv(
+  "wits_printing_population_with_auxiliary.csv",
+  stringsAsFactors=FALSE
+)
+
+stopifnot(nrow(population) == 10000)
+
+required <- c("student_id","faculty","pages_month")
+if (!all(required %in% names(population))) {
+  stop("Required population variables are missing.")
+}
+
+N <- nrow(population)
+true_mean <- mean(population$pages_month)
+true_variance <- var(population$pages_month)
+
+cat("Population size:", N, "\n")
+cat("True population mean:", round(true_mean,4), "\n")
+cat("True population variance:", round(true_variance,4), "\n")
+```
+
+# 2. Define the sampling designs
+
+The stratified design uses the same Neyman allocation as Sections C and D.
+
+```{r design}
+allocation <- data.frame(
+  faculty=c(
+    "Commerce, Law and Management",
+    "Engineering and the Built Environment",
+    "Health Sciences",
+    "Humanities",
+    "Science"
+  ),
+  N_h=c(2500,2000,1700,2300,1500),
+  n_h=c(97,55,77,138,47),
+  stringsAsFactors=FALSE
+)
+
+allocation$W_h <- allocation$N_h/N
+allocation$f_h <- allocation$n_h/allocation$N_h
+
+n_total <- sum(allocation$n_h)
+z <- qnorm(0.975)
+
+allocation
+cat("Total sample size per repetition:", n_total, "\n")
+```
+
+# 3. Simulation settings
+
+The assignment requires at least 500 repetitions; 1,000 repetitions are used here.
+
+```{r settings}
+B <- 1000
+simulation_seed <- 4106
+set.seed(simulation_seed)
+
+cat("Monte Carlo repetitions:", B, "\n")
+cat("Simulation seed:", simulation_seed, "\n")
+```
+
+# 4. Storage objects
+
+```{r storage}
+strat_est <- numeric(B)
+strat_se <- numeric(B)
+strat_lower <- numeric(B)
+strat_upper <- numeric(B)
+
+srs_est <- numeric(B)
+srs_se <- numeric(B)
+srs_lower <- numeric(B)
+srs_upper <- numeric(B)
+```
+
+# 5. Repeated sampling simulation
+
+```{r simulation}
+for (b in seq_len(B)) {
+
+  # -----------------------------
+  # Stratified random sample
+  # -----------------------------
+  stratum_samples <- vector("list", nrow(allocation))
+
+  for (h in seq_len(nrow(allocation))) {
+
+    f <- allocation$faculty[h]
+
+    d_h <- population[
+      population$faculty == f,
+    ]
+
+    idx_h <- sample(
+      seq_len(nrow(d_h)),
+      size=allocation$n_h[h],
+      replace=FALSE
+    )
+
+    stratum_samples[[h]] <- d_h[idx_h, ]
+  }
+
+  # Stratum sample means and variances
+  ybar_h <- numeric(nrow(allocation))
+  s2_h <- numeric(nrow(allocation))
+
+  for (h in seq_len(nrow(allocation))) {
+    y_h <- stratum_samples[[h]]$pages_month
+    ybar_h[h] <- mean(y_h)
+    s2_h[h] <- var(y_h)
+  }
+
+  strat_est[b] <- sum(allocation$W_h * ybar_h)
+
+  strat_var_b <- sum(
+    allocation$W_h^2 *
+      (1-allocation$f_h) *
+      s2_h/allocation$n_h
+  )
+
+  strat_se[b] <- sqrt(strat_var_b)
+  strat_lower[b] <- strat_est[b] - z*strat_se[b]
+  strat_upper[b] <- strat_est[b] + z*strat_se[b]
+
+  # -----------------------------
+  # Equal-sized SRSWOR
+  # -----------------------------
+  idx_srs <- sample(
+    seq_len(N),
+    size=n_total,
+    replace=FALSE
+  )
+
+  srs_y <- population$pages_month[idx_srs]
+
+  srs_est[b] <- mean(srs_y)
+
+  srs_var_b <- (1-n_total/N) *
+    var(srs_y)/n_total
+
+  srs_se[b] <- sqrt(srs_var_b)
+  srs_lower[b] <- srs_est[b] - z*srs_se[b]
+  srs_upper[b] <- srs_est[b] + z*srs_se[b]
+}
+
+cat("Simulation completed successfully.\n")
+```
+
+# 6. Performance-measure function
+
+```{r performance-function}
+performance <- function(est, se, lower, upper, truth) {
+
+  bias <- mean(est) - truth
+  relative_bias <- 100*bias/truth
+  empirical_se <- sd(est)
+  average_estimated_se <- mean(se)
+  mse <- mean((est-truth)^2)
+  rmse <- sqrt(mse)
+  coverage <- mean(lower <= truth & upper >= truth)
+  average_ci_width <- mean(upper-lower)
+  mcse_coverage <- sqrt(coverage*(1-coverage)/length(est))
+
+  data.frame(
+    Mean_Estimate=mean(est),
+    Bias=bias,
+    Relative_Bias_Percent=relative_bias,
+    Empirical_SE=empirical_se,
+    Average_Estimated_SE=average_estimated_se,
+    MSE=mse,
+    RMSE=rmse,
+    Coverage=coverage,
+    Coverage_Percent=100*coverage,
+    Average_CI_Width=average_ci_width,
+    MCSE_Coverage=mcse_coverage
+  )
+}
+```
+
+# 7. Calculate simulation performance
+
+```{r performance-results}
+strat_perf <- performance(
+  strat_est, strat_se,
+  strat_lower, strat_upper,
+  true_mean
+)
+
+srs_perf <- performance(
+  srs_est, srs_se,
+  srs_lower, srs_upper,
+  true_mean
+)
+
+strat_perf$Design <- "Stratified Neyman"
+srs_perf$Design <- "SRSWOR"
+
+performance_table <- rbind(
+  strat_perf,
+  srs_perf
+)
+
+performance_table <- performance_table[
+  ,
+  c(
+    "Design",
+    "Mean_Estimate",
+    "Bias",
+    "Relative_Bias_Percent",
+    "Empirical_SE",
+    "Average_Estimated_SE",
+    "MSE",
+    "RMSE",
+    "Coverage",
+    "Coverage_Percent",
+    "Average_CI_Width",
+    "MCSE_Coverage"
+  )
+]
+
+performance_table
+```
+
+# 8. Rounded report table
+
+```{r rounded-table}
+report_table <- performance_table
+
+numeric_cols <- sapply(report_table, is.numeric)
+report_table[numeric_cols] <- lapply(
+  report_table[numeric_cols],
+  function(x) round(x,4)
+)
+
+report_table
+```
+
+# 9. Empirical SE versus average estimated SE
+
+This comparison assesses whether the design-based variance estimators correctly reflect the actual repeated-sampling variability.
+
+```{r se-comparison}
+se_comparison <- data.frame(
+  Design=c("Stratified Neyman","SRSWOR"),
+  Empirical_SE=c(
+    sd(strat_est),
+    sd(srs_est)
+  ),
+  Average_Estimated_SE=c(
+    mean(strat_se),
+    mean(srs_se)
+  )
+)
+
+se_comparison$Difference <- 
+  se_comparison$Average_Estimated_SE -
+  se_comparison$Empirical_SE
+
+se_comparison
+```
+
+# 10. Relative empirical efficiency
+
+The ratio of empirical variances provides a repeated-sampling comparison of precision.
+
+```{r efficiency}
+empirical_var_strat <- var(strat_est)
+empirical_var_srs <- var(srs_est)
+
+empirical_deff <- empirical_var_strat /
+  empirical_var_srs
+
+empirical_relative_efficiency <-
+  empirical_var_srs /
+  empirical_var_strat
+
+cat("Empirical stratified variance:",
+    round(empirical_var_strat,6), "\n")
+
+cat("Empirical SRSWOR variance:",
+    round(empirical_var_srs,6), "\n")
+
+cat("Empirical variance ratio (Stratified/SRS):",
+    round(empirical_deff,4), "\n")
+
+cat("Empirical relative efficiency (SRS/Stratified):",
+    round(empirical_relative_efficiency,4), "\n")
+```
+
+# 11. Distribution of estimates
+
+```{r estimate-hist-strat, fig.width=8, fig.height=5}
+hist(
+  strat_est,
+  breaks=30,
+  main="Distribution of Stratified Mean Estimates Across 1,000 Repetitions",
+  xlab="Estimated mean pages per month"
+)
+
+abline(v=true_mean, lty=2, lwd=2)
+```
+
+```{r estimate-hist-srs, fig.width=8, fig.height=5}
+hist(
+  srs_est,
+  breaks=30,
+  main="Distribution of SRSWOR Mean Estimates Across 1,000 Repetitions",
+  xlab="Estimated mean pages per month"
+)
+
+abline(v=true_mean, lty=2, lwd=2)
+```
+
+# 12. Direct comparison of estimates
+
+```{r boxplot-estimates, fig.width=8, fig.height=5}
+boxplot(
+  strat_est,
+  srs_est,
+  names=c("Stratified","SRSWOR"),
+  ylab="Estimated mean pages per month",
+  main="Repeated-Sampling Distribution of the Mean Estimator"
+)
+
+abline(h=true_mean, lty=2, lwd=2)
+```
+
+# 13. Empirical SE and average estimated SE plot
+
+```{r se-plot, fig.width=8, fig.height=5}
+se_matrix <- rbind(
+  c(sd(strat_est), sd(srs_est)),
+  c(mean(strat_se), mean(srs_se))
+)
+
+barplot(
+  se_matrix,
+  beside=TRUE,
+  names.arg=c("Stratified","SRSWOR"),
+  ylab="Standard error",
+  main="Empirical SE versus Average Estimated SE",
+  legend.text=c("Empirical SE","Average estimated SE")
+)
+```
+
+# 14. Coverage comparison
+
+```{r coverage-plot, fig.width=8, fig.height=5}
+coverage_values <- 100*c(
+  mean(strat_lower <= true_mean &
+       strat_upper >= true_mean),
+  mean(srs_lower <= true_mean &
+       srs_upper >= true_mean)
+)
+
+barplot(
+  coverage_values,
+  names.arg=c("Stratified","SRSWOR"),
+  ylim=c(0,100),
+  ylab="95% CI coverage (%)",
+  main="Empirical 95% Confidence-Interval Coverage"
+)
+
+abline(h=95, lty=2, lwd=2)
+```
+
+# 15. RMSE comparison
+
+```{r rmse-plot, fig.width=8, fig.height=5}
+rmse_values <- c(
+  sqrt(mean((strat_est-true_mean)^2)),
+  sqrt(mean((srs_est-true_mean)^2))
+)
+
+barplot(
+  rmse_values,
+  names.arg=c("Stratified","SRSWOR"),
+  ylab="RMSE",
+  main="RMSE Comparison Across 1,000 Repetitions"
+)
+```
+
+# 16. Save simulation-level results
+
+```{r simulation-data}
+simulation_results <- data.frame(
+  repetition=seq_len(B),
+  strat_estimate=strat_est,
+  strat_se=strat_se,
+  strat_ci_lower=strat_lower,
+  strat_ci_upper=strat_upper,
+  strat_covers=(
+    strat_lower <= true_mean &
+    strat_upper >= true_mean
+  ),
+  srs_estimate=srs_est,
+  srs_se=srs_se,
+  srs_ci_lower=srs_lower,
+  srs_ci_upper=srs_upper,
+  srs_covers=(
+    srs_lower <= true_mean &
+    srs_upper >= true_mean
+  )
+)
+
+head(simulation_results)
+```
+
+```{r save}
+write.csv(
+  simulation_results,
+  "section_E_simulation_results_1000.csv",
+  row.names=FALSE
+)
+
+write.csv(
+  performance_table,
+  "section_E_performance_summary.csv",
+  row.names=FALSE
+)
+
+write.csv(
+  se_comparison,
+  "section_E_empirical_vs_estimated_SE.csv",
+  row.names=FALSE
+)
+```

@@ -1,0 +1,433 @@
+---
+title: "STAT4102 Applied Sampling Mini Project: Section B"
+subtitle: "Sample-Size Determination for Stratified Random Sampling"
+date: "2026-09-15"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+# Purpose
+
+This document determines the sample size for estimating the mean monthly number of pages printed or photocopied by students in the simulated finite population of 10,000 Wits University students.
+
+The primary design is stratified random sampling without replacement, using faculty as the stratum. Neyman allocation is used because the stratum-specific population standard deviations are known from the simulated finite population.
+
+The SRSWOR calculation is included as a benchmark.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Known finite-population quantities
+
+The following quantities come from the population generated with random seed 4102.
+
+```{r known-values}
+N <- 10000
+baseline_mean <- 111.54
+overall_variance <- 3900.87
+overall_sd <- 62.46
+
+faculty <- c(
+  "Commerce, Law and Management",
+  "Engineering and the Built Environment",
+  "Health Sciences",
+  "Humanities",
+  "Science"
+)
+
+N_h <- c(2500, 2000, 1700, 2300, 1500)
+S_h <- c(52.53, 37.28, 61.17, 80.76, 42.60)
+
+known_values <- data.frame(
+  faculty = faculty,
+  N_h = N_h,
+  W_h = N_h / N,
+  S_h = S_h
+)
+
+known_values
+```
+
+# Confidence level and required precision
+
+A 95% confidence level is used, so the normal critical value is 1.96.
+
+The required confidence-interval half-width is 5% of the baseline population mean.
+
+```{r precision}
+z <- qnorm(0.975)
+
+E <- 0.05 * baseline_mean
+
+cat("95% critical value =", round(z, 4), "\n")
+cat("Baseline population mean =", baseline_mean, "pages per month\n")
+cat("Required half-width (5% of baseline) =", round(E, 3), "pages\n")
+```
+
+Thus, the target half-width is approximately 5.58 pages per student per month.
+
+# SRSWOR benchmark sample size
+
+For estimating a finite-population mean under SRSWOR, the sample size is
+
+
+
+```{r srs-sample-size}
+n_srs_raw <- (N * z^2 * overall_variance) /
+  (E^2 * (N - 1) + z^2 * overall_variance)
+
+n_srs <- ceiling(n_srs_raw)
+
+cat("Unrounded SRSWOR sample size =", round(n_srs_raw, 3), "\n")
+cat("Minimum SRSWOR sample size =", n_srs, "\n")
+```
+
+# Stratified sample size under Neyman allocation
+
+
+```{r helper-functions}
+allocate_neyman <- function(n_total, N_h, S_h) {
+  raw <- n_total * (N_h * S_h) / sum(N_h * S_h)
+  alloc <- floor(raw)
+  remainder <- n_total - sum(alloc)
+
+  if (remainder > 0) {
+    order_fraction <- order(raw - alloc, decreasing = TRUE)
+    alloc[order_fraction[seq_len(remainder)]] <-
+      alloc[order_fraction[seq_len(remainder)]] + 1
+  }
+
+  alloc
+}
+
+strat_variance <- function(n_h, N_h, S_h) {
+  W_h <- N_h / sum(N_h)
+
+  sum(
+    W_h^2 *
+      (1 - n_h / N_h) *
+      (S_h^2 / n_h)
+  )
+}
+
+strat_halfwidth <- function(n_total, N_h, S_h, z = qnorm(0.975)) {
+  n_h <- allocate_neyman(n_total, N_h, S_h)
+  z * sqrt(strat_variance(n_h, N_h, S_h))
+}
+
+find_min_strat_n <- function(E_target, N_h, S_h, z = qnorm(0.975)) {
+  for (n in seq_along(seq_len(sum(N_h)))) {
+    if (n < length(N_h)) next
+
+    n_h <- allocate_neyman(n, N_h, S_h)
+
+    if (all(n_h >= 1)) {
+      hw <- z * sqrt(strat_variance(n_h, N_h, S_h))
+
+      if (hw <= E_target) {
+        return(list(
+          n = n,
+          n_h = n_h,
+          halfwidth = hw,
+          variance = strat_variance(n_h, N_h, S_h)
+        ))
+      }
+    }
+  }
+
+  stop("No feasible sample size found.")
+}
+```
+
+Now solve for the minimum total sample size satisfying the required 5% precision bound.
+
+```{r minimum-stratified-n}
+strat_result <- find_min_strat_n(
+  E_target = E,
+  N_h = N_h,
+  S_h = S_h,
+  z = z
+)
+
+n_strat <- strat_result$n
+n_h_min <- strat_result$n_h
+
+cat("Minimum stratified sample size =", n_strat, "\n")
+cat("Achieved half-width =", round(strat_result$halfwidth, 3), "pages\n")
+cat("Estimated variance of stratified mean =",
+    round(strat_result$variance, 4), "\n")
+cat("Estimated SE =",
+    round(sqrt(strat_result$variance), 4), "pages\n")
+```
+
+# Neyman allocation of the minimum sample
+
+```{r minimum-allocation}
+allocation_minimum <- data.frame(
+  faculty = faculty,
+  N_h = N_h,
+  S_h = S_h,
+  n_h = n_h_min
+)
+
+allocation_minimum$inclusion_probability <-
+  allocation_minimum$n_h / allocation_minimum$N_h
+
+allocation_minimum$weight <-
+  allocation_minimum$N_h / allocation_minimum$n_h
+
+allocation_minimum
+cat("Total allocated =", sum(allocation_minimum$n_h), "\n")
+```
+
+# Adjustment for anticipated non-response
+
+
+```{r nonresponse}
+nonresponse_rate <- 0.10
+
+n_final <- ceiling(n_strat / (1 - nonresponse_rate))
+
+cat("Minimum completed sample required =", n_strat, "\n")
+cat("Assumed non-response rate =", nonresponse_rate * 100, "%\n")
+cat("Initial sample after non-response adjustment =", n_final, "\n")
+```
+
+The non-response-adjusted total is also allocated across the five strata using Neyman allocation.
+
+```{r final-allocation}
+n_h_final <- allocate_neyman(n_final, N_h, S_h)
+
+final_allocation <- data.frame(
+  faculty = faculty,
+  N_h = N_h,
+  S_h = S_h,
+  n_h = n_h_final
+)
+
+final_allocation$inclusion_probability <-
+  final_allocation$n_h / final_allocation$N_h
+
+final_allocation$sampling_weight <-
+  final_allocation$N_h / final_allocation$n_h
+
+final_allocation
+cat("Final total sample =", sum(final_allocation$n_h), "\n")
+```
+
+# Sample size versus margin of error
+
+The next graph shows how the required total sample size changes as the target confidence-interval half-width changes.
+
+```{r margin-grid}
+margin_grid <- seq(2, 15, by = 0.25)
+
+required_n <- sapply(
+  margin_grid,
+  function(e) find_min_strat_n(e, N_h, S_h, z)$n
+)
+
+sample_size_curve <- data.frame(
+  margin_of_error = margin_grid,
+  required_sample_size = required_n
+)
+
+head(sample_size_curve)
+```
+
+```{r sample-size-plot, fig.width=8, fig.height=5}
+plot(
+  sample_size_curve$margin_of_error,
+  sample_size_curve$required_sample_size,
+  type = "l",
+  lwd = 2,
+  xlab = "Confidence-interval half-width (pages)",
+  ylab = "Required total sample size",
+  main = "Required Sample Size versus Margin of Error"
+)
+
+abline(v = E, lty = 2)
+abline(h = n_strat, lty = 2)
+
+points(E, n_strat, pch = 19)
+```
+
+# Sensitivity analysis: 25%, 50%, 75% and 100% of baseline
+
+The assignment also requires the sample-size calculation to be repeated for assumed parameter values equal to 25%, 50%, 75% and 100% of the baseline value.
+
+For each assumed parameter value, the margin of error is expressed as a percentage of that assumed parameter value. The population size, faculty sizes, stratum weights, stratum standard deviations, confidence level, sampling design and Neyman allocation rule are held fixed.
+
+```{r sensitivity-values}
+baseline_fractions <- c(0.25, 0.50, 0.75, 1.00)
+
+assumed_means <- baseline_mean * baseline_fractions
+
+sensitivity_table <- data.frame(
+  baseline_fraction = baseline_fractions,
+  assumed_parameter = assumed_means,
+  five_percent_halfwidth = 0.05 * assumed_means
+)
+
+sensitivity_table
+```
+
+Calculate the sample size required at the 5% precision level for each assumed parameter value.
+
+```{r sensitivity-n}
+sensitivity_table$required_n <- sapply(
+  sensitivity_table$five_percent_halfwidth,
+  function(e) find_min_strat_n(e, N_h, S_h, z)$n
+)
+
+sensitivity_table
+```
+
+# Four sensitivity curves on one graph
+
+To show how required sample size changes with precision, margins of error from 2% to 15% of each assumed parameter value are considered.
+
+```{r sensitivity-curves-data}
+relative_margins <- seq(0.02, 0.15, by = 0.005)
+
+curve_list <- lapply(
+  seq_along(assumed_means),
+  function(j) {
+    assumed_value <- assumed_means[j]
+
+    absolute_margins <- relative_margins * assumed_value
+
+    n_values <- sapply(
+      absolute_margins,
+      function(e) find_min_strat_n(e, N_h, S_h, z)$n
+    )
+
+    data.frame(
+      relative_margin_percent = 100 * relative_margins,
+      absolute_margin = absolute_margins,
+      required_n = n_values,
+      assumed_parameter = assumed_value,
+      baseline_fraction = baseline_fractions[j]
+    )
+  }
+)
+
+sensitivity_curves <- do.call(rbind, curve_list)
+```
+
+```{r four-curves-plot, fig.width=8, fig.height=6}
+curve_25 <- subset(sensitivity_curves, baseline_fraction == 0.25)
+curve_50 <- subset(sensitivity_curves, baseline_fraction == 0.50)
+curve_75 <- subset(sensitivity_curves, baseline_fraction == 0.75)
+curve_100 <- subset(sensitivity_curves, baseline_fraction == 1.00)
+
+ylim_values <- range(sensitivity_curves$required_n)
+
+plot(
+  curve_25$relative_margin_percent,
+  curve_25$required_n,
+  type = "l",
+  lwd = 2,
+  ylim = ylim_values,
+  xlab = "Margin of error (% of assumed parameter value)",
+  ylab = "Required total sample size",
+  main = "Sample-Size Sensitivity to Assumed Parameter Value"
+)
+
+lines(
+  curve_50$relative_margin_percent,
+  curve_50$required_n,
+  lwd = 2,
+  lty = 2
+)
+
+lines(
+  curve_75$relative_margin_percent,
+  curve_75$required_n,
+  lwd = 2,
+  lty = 3
+)
+
+lines(
+  curve_100$relative_margin_percent,
+  curve_100$required_n,
+  lwd = 2,
+  lty = 4
+)
+
+abline(v = 5, lty = 2)
+
+legend(
+  "topright",
+  legend = c(
+    "25% of baseline",
+    "50% of baseline",
+    "75% of baseline",
+    "100% of baseline"
+  ),
+  lty = c(1, 2, 3, 4),
+  lwd = 2,
+  bty = "n"
+)
+```
+
+# Quantities held fixed in the sensitivity analysis
+
+The following quantities are held fixed:
+
+* finite population size, 
+* five faculty population sizes
+* stratum-specific standard deviations
+* 95% confidence level;
+* stratified random sampling without replacement;
+* Neyman allocation rule; and
+* the simulated finite-population structure.
+
+Only the assumed value of the primary parameter, and therefore the absolute margin of error associated with a specified relative precision, is changed.
+
+# Comparison with the SRSWOR benchmark
+
+```{r comparison}
+comparison <- data.frame(
+  Design = c(
+    "SRSWOR benchmark",
+    "Stratified Neyman (minimum completed sample)",
+    "Stratified Neyman (10% non-response adjusted)"
+  ),
+  Sample_size = c(
+    n_srs,
+    n_strat,
+    n_final
+  )
+)
+
+comparison
+```
+
+# Save Section B results
+
+```{r save-results}
+write.csv(
+  final_allocation,
+  "section_B_final_neyman_allocation.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  sensitivity_table,
+  "section_B_sensitivity_summary.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  sample_size_curve,
+  "section_B_sample_size_curve.csv",
+  row.names = FALSE
+)
+
+```
+
+
